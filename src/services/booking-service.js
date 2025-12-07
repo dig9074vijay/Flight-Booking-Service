@@ -50,6 +50,7 @@ async function createBooking(data) {
 
 async function makePayment(data) {
   // Placeholder for payment processing logic
+ 
   const transaction = await db.sequelize.transaction();
   try {
     const booking = await bookingRepository.get(data.bookingId, transaction);
