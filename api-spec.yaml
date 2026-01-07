@@ -1,0 +1,437 @@
+openapi: 3.0.3
+info:
+  title: Flight Booking Service API
+  description: |
+    A RESTful API service for managing flight bookings. This service provides endpoints for creating bookings, processing payments, and managing booking statuses with proper error handling and validation.
+
+    **Features:**
+    - Flight booking creation with seat validation
+    - Payment processing with idempotency support
+    - Automatic booking cancellation after 15-minute payment timeout
+    - Integration with external flight service for availability checking
+    - Transaction support for data consistency
+
+  version: 1.0.0
+  contact:
+    name: Flight Booking Service
+    email: support@flightbooking.com
+  license:
+    name: ISC
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Development server
+  - url: https://api.flightbooking.com/api/v1
+    description: Production server
+
+paths:
+  /info:
+    get:
+      summary: Health check endpoint
+      description: Returns the status of the API to check if it's live and running.
+      operationId: getApiInfo
+      tags:
+        - Health Check
+      responses:
+        "200":
+          description: API is live and running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfoResponse"
+              example:
+                success: true
+                message: "API is live"
+                error: {}
+                data: {}
+
+  /bookings:
+    post:
+      summary: Create a new booking
+      description: |
+        Creates a new flight booking for the specified flight and user.
+        This endpoint:
+        - Validates seat availability with the flight service
+        - Calculates total cost based on number of seats and flight price
+        - Updates seat inventory in the flight service
+        - Uses database transactions for data consistency
+        - Sets booking status to 'initiated' with 15-minute payment window
+      operationId: createBooking
+      tags:
+        - Bookings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingRequest"
+            examples:
+              singleSeat:
+                summary: Single seat booking
+                value:
+                  flightId: 101
+                  userId: 1001
+                  noOfSeats: 1
+              multipleSeats:
+                summary: Multiple seats booking
+                value:
+                  flightId: 102
+                  userId: 1002
+                  noOfSeats: 3
+      responses:
+        "201":
+          description: Booking created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingResponse"
+              example:
+                success: true
+                message: "Booking created successfully"
+                error: {}
+                data:
+                  id: 12345
+                  flightId: 101
+                  userId: 1001
+                  status: "initiated"
+                  noOfSeats: 1
+                  totalCost: 15000
+                  createdAt: "2026-01-08T10:30:00.000Z"
+                  updatedAt: "2026-01-08T10:30:00.000Z"
+        "400":
+          description: Bad request - Invalid input or insufficient seats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                insufficientSeats:
+                  summary: Not enough seats available
+                  value:
+                    success: false
+                    message: "Failed to create booking"
+                    error:
+                      message: "Not enough seats available"
+                      statusCode: 400
+                    data: {}
+                invalidInput:
+                  summary: Invalid request data
+                  value:
+                    success: false
+                    message: "Failed to create booking"
+                    error:
+                      message: "Invalid flight ID or user ID"
+                      statusCode: 400
+                    data: {}
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bookings/payments:
+    post:
+      summary: Process payment for a booking
+      description: |
+        Processes payment for an existing booking.
+        This endpoint:
+        - Requires an idempotency key to prevent duplicate payments
+        - Validates payment within 15-minute window (after that, booking is auto-cancelled)
+        - Verifies payment amount matches booking total cost
+        - Confirms user ownership of the booking
+        - Updates booking status to 'booked' upon successful payment
+        - Supports idempotent operations - duplicate requests with same key return cached result
+      operationId: makePayment
+      tags:
+        - Bookings
+        - Payments
+      parameters:
+        - name: x-idempotency-key
+          in: header
+          required: true
+          description: |
+            Unique idempotency key to ensure payment is processed only once.
+            Use UUID or timestamp-based unique identifier.
+          schema:
+            type: string
+            example: "payment-12345-1641637800000"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MakePaymentRequest"
+            example:
+              totalCost: 15000
+              userId: 1001
+              bookingId: 12345
+      responses:
+        "200":
+          description: Payment already processed (idempotent response)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+              example:
+                success: true
+                message: "Payment already processed"
+                error: {}
+                data:
+                  id: 12345
+                  flightId: 101
+                  userId: 1001
+                  status: "booked"
+                  noOfSeats: 1
+                  totalCost: 15000
+                  updatedAt: "2026-01-08T10:45:00.000Z"
+        "201":
+          description: Payment processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+              example:
+                success: true
+                message: "Payment made successfully"
+                error: {}
+                data:
+                  id: 12345
+                  flightId: 101
+                  userId: 1001
+                  status: "booked"
+                  noOfSeats: 1
+                  totalCost: 15000
+                  updatedAt: "2026-01-08T10:45:00.000Z"
+        "400":
+          description: Bad request - Missing idempotency key, payment timeout, or validation errors
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missingIdempotencyKey:
+                  summary: Idempotency key is required
+                  value:
+                    success: false
+                    message: "Failed to pay for the booking"
+                    error:
+                      message: "Idempotency key is required"
+                      statusCode: 400
+                    data: {}
+                paymentTimeout:
+                  summary: Payment time expired
+                  value:
+                    success: false
+                    message: "Failed to pay for the booking"
+                    error:
+                      message: "Booking payment time expired"
+                      statusCode: 400
+                    data: {}
+                amountMismatch:
+                  summary: Payment amount mismatch
+                  value:
+                    success: false
+                    message: "Failed to pay for the booking"
+                    error:
+                      message: "Payment amount mismatch"
+                      statusCode: 400
+                    data: {}
+                userMismatch:
+                  summary: User ID mismatch
+                  value:
+                    success: false
+                    message: "Failed to pay for the booking"
+                    error:
+                      message: "User ID mismatch"
+                      statusCode: 400
+                    data: {}
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    CreateBookingRequest:
+      type: object
+      required:
+        - flightId
+        - userId
+        - noOfSeats
+      properties:
+        flightId:
+          type: integer
+          description: ID of the flight to book
+          example: 101
+          minimum: 1
+        userId:
+          type: integer
+          description: ID of the user making the booking
+          example: 1001
+          minimum: 1
+        noOfSeats:
+          type: integer
+          description: Number of seats to book
+          example: 1
+          minimum: 1
+          maximum: 10
+
+    MakePaymentRequest:
+      type: object
+      required:
+        - totalCost
+        - userId
+        - bookingId
+      properties:
+        totalCost:
+          type: integer
+          description: Total cost for the booking (in smallest currency unit, e.g., cents)
+          example: 15000
+          minimum: 1
+        userId:
+          type: integer
+          description: ID of the user making the payment
+          example: 1001
+          minimum: 1
+        bookingId:
+          type: integer
+          description: ID of the booking to pay for
+          example: 12345
+          minimum: 1
+
+    BookingData:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Unique booking identifier
+          example: 12345
+        flightId:
+          type: integer
+          description: ID of the booked flight
+          example: 101
+        userId:
+          type: integer
+          description: ID of the user who made the booking
+          example: 1001
+        status:
+          type: string
+          enum: [initiated, cancelled, pending, booked]
+          description: Current status of the booking
+          example: initiated
+        noOfSeats:
+          type: integer
+          description: Number of seats booked
+          example: 1
+        totalCost:
+          type: integer
+          description: Total cost of the booking
+          example: 15000
+        createdAt:
+          type: string
+          format: date-time
+          description: When the booking was created
+          example: "2026-01-08T10:30:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the booking was last updated
+          example: "2026-01-08T10:30:00.000Z"
+
+    BookingResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Booking created successfully"
+        error:
+          type: object
+          example: {}
+        data:
+          $ref: "#/components/schemas/BookingData"
+
+    PaymentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Payment made successfully"
+        error:
+          type: object
+          example: {}
+        data:
+          $ref: "#/components/schemas/BookingData"
+
+    InfoResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "API is live"
+        error:
+          type: object
+          example: {}
+        data:
+          type: object
+          example: {}
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Failed to create booking"
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+              example: "Not enough seats available"
+            statusCode:
+              type: integer
+              example: 400
+        data:
+          type: object
+          example: {}
+
+  examples:
+    CreateBookingExample:
+      summary: Example booking creation
+      value:
+        flightId: 101
+        userId: 1001
+        noOfSeats: 2
+
+    MakePaymentExample:
+      summary: Example payment request
+      value:
+        totalCost: 30000
+        userId: 1001
+        bookingId: 12345
+
+tags:
+  - name: Health Check
+    description: API health and status endpoints
+  - name: Bookings
+    description: Flight booking management operations
+  - name: Payments
+    description: Payment processing for bookings
+
+externalDocs:
+  description: Find out more about Flight Booking Service
+  url: https://github.com/your-repo/flight-booking-service
